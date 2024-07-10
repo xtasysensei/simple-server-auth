@@ -170,8 +170,6 @@ func loginUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		return
 	}
 
-	log.Println("Retrieved password hash from database:", storedPasswordHash)
-	log.Println(inputPassword)
 	match := passwordhashing.VerifyPassword(inputPassword, storedPasswordHash)
 	if !match {
 		log.Println("Login failed. Passwords do not match.")
