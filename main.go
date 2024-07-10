@@ -3,15 +3,21 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"simple-server-auth/passwordhashing"
 	"syscall"
 	"time"
 
+	"github.com/go-playground/locales/en"
+	ut "github.com/go-playground/universal-translator"
+	"github.com/go-playground/validator/v10"
+	enTranslations "github.com/go-playground/validator/v10/translations/en"
 	"github.com/jmoiron/sqlx"
 	"github.com/joho/godotenv"
 	"github.com/julienschmidt/httprouter"
@@ -19,9 +25,9 @@ import (
 )
 
 type User struct {
-	Username     string `db:"username"`
-	Email        string `db:"email"`
-	PasswordHash string `db:"password_hash"`
+	Username string `json:"username" validate:"required,min=5,max=20,alphanum"`
+	Email    string `json:"email" validate:"required,email"`
+	Password string `json:"password" validate:"required,min=5,customPassword"`
 }
 
 var connStr, dbname string
@@ -64,6 +70,18 @@ func gracefulShutdown(server *http.Server) {
 	log.Println("Service stopped")
 }
 
+func translateError(err error, trans ut.Translator) (errs []error) {
+	if err == nil {
+		return nil
+	}
+	validatorErrs := err.(validator.ValidationErrors)
+	for _, e := range validatorErrs {
+		translatedErr := fmt.Errorf(e.Translate(trans))
+		errs = append(errs, translatedErr)
+	}
+	return errs
+}
+
 // handles connection to postgresql database
 func databaseHandler() {
 	db, err := sqlx.Connect("postgres", connStr)
@@ -81,25 +99,73 @@ func databaseHandler() {
 	}
 }
 
-func getFormData(w http.ResponseWriter, r *http.Request) (string, string, string) {
-	err := r.ParseForm()
-	if err != nil {
-		log.Printf("Error parsing form: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return "", "", ""
+func getFormData(w http.ResponseWriter, r *http.Request) (string, string, string, User) {
+	var user User
+	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+
 	}
 
-	username := r.FormValue("username")
-	email := r.FormValue("email")
-	password := r.FormValue("password")
+	validate := validator.New()
+	english := en.New()
+	uni := ut.New(english, english)
+	trans, _ := uni.GetTranslator("en")
+	_ = enTranslations.RegisterDefaultTranslations(validate, trans)
+
+	// Register custom validation function
+	_ = validate.RegisterValidation("customPassword", func(fl validator.FieldLevel) bool {
+		password := fl.Field().String()
+		if len(password) < 8 {
+			return false
+		}
+
+		// Check for at least one uppercase letter, one lowercase letter, one digit, and one special character
+		var (
+			hasUpper    = false
+			hasLower    = false
+			hasDigit    = false
+			hasSpecial  = false
+			specialChar = regexp.MustCompile(`[[:^alnum:]]`) // matches non-alphanumeric characters
+		)
+
+		for _, char := range password {
+			switch {
+			case 'A' <= char && char <= 'Z':
+				hasUpper = true
+			case 'a' <= char && char <= 'z':
+				hasLower = true
+			case '0' <= char && char <= '9':
+				hasDigit = true
+			case specialChar.MatchString(string(char)):
+				hasSpecial = true
+			}
+
+			// Exit early if all conditions are met
+			if hasUpper && hasLower && hasDigit && hasSpecial {
+				return true
+			}
+		}
+
+		return false
+	})
+	username := user.Username
+	email := user.Email
+	password := user.Password
+
+	if err := validate.Struct(user); err != nil {
+		// Validation failed, handle the error
+		errors := translateError(err, trans)
+		http.Error(w, fmt.Sprintf("Validation error: %s", errors), http.StatusBadRequest)
+		return "", "", "", user
+	}
 
 	if username == "" || email == "" || password == "" {
 		log.Printf("Missing form data: username=%s, email=%s, password=%s", username, email, password)
 		http.Error(w, "Missing form data", http.StatusBadRequest)
-		return "", "", ""
+		return "", "", "", user
 	}
 
-	return username, email, password
+	return username, email, password, user
 }
 
 // handles creating user
@@ -109,7 +175,11 @@ func createUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		return
 	}
 
-	username, email, password := getFormData(w, r)
+	username, email, password, user := getFormData(w, r)
+	if username == "" || email == "" || password == "" {
+		// Error already handled in getFormData
+		return
+	}
 	passwordhash, _ := passwordhashing.HashPassword(password)
 
 	databaseHandler()
@@ -121,20 +191,37 @@ func createUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		return
 	}
 	defer db.Close()
+
+	exists, err := usernameAndEmailExists(db, email, username)
+	if err != nil {
+		log.Printf("Failed to check username existence: %v", err)
+		http.Error(w, "Failed to check username existence", http.StatusInternalServerError)
+		return
+	}
+	if exists {
+		http.Error(w, "Username already exists", http.StatusConflict)
+		return
+	}
 	insertUserDB(db, username, email, passwordhash, w)
+
+	json.NewEncoder(w).Encode(user)
 	// Create an instance of the Form struct
 }
 
-func insertUserDB(db *sql.DB, username, email, passwordhash string, w http.ResponseWriter) {
-	userInfo := &User{
-		Username:     username,
-		Email:        email,
-		PasswordHash: passwordhash,
+func usernameAndEmailExists(db *sql.DB, email, username string) (bool, error) {
+	var count int
+	err := db.QueryRow("SELECT COUNT(*) FROM users WHERE username = $1 OR email = $2", username, email).Scan(&count)
+	if err != nil {
+		return false, err
 	}
+	return count > 0, nil
+}
 
-	if userInfo.Username != "" && userInfo.Email != "" && userInfo.PasswordHash != "" {
+func insertUserDB(db *sql.DB, username, email, passwordhash string, w http.ResponseWriter) {
+
+	if username != "" && email != "" && passwordhash != "" {
 		query := "INSERT INTO users(username, email, password_hash) VALUES ($1, $2, $3)"
-		if _, err := db.Exec(query, userInfo.Username, userInfo.Email, userInfo.PasswordHash); err != nil {
+		if _, err := db.Exec(query, username, email, passwordhash); err != nil {
 			http.Error(w, "Query to database failed: "+err.Error(), http.StatusInternalServerError)
 			log.Printf("An error occurred while executing query: %v", err)
 			return
@@ -149,12 +236,12 @@ func insertUserDB(db *sql.DB, username, email, passwordhash string, w http.Respo
 }
 
 func loginUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	_, _, inputPassword := getFormData(w, r)
+	queryUsername, _, inputPassword, user := getFormData(w, r)
 	if inputPassword == "" {
-		// Error already logged and response sent in getFormData
-		return
+		return // Error already logged and response sent in getFormData
 	}
 
+	// Open database connection
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		log.Printf("Failed to open database: %v", err)
@@ -163,40 +250,47 @@ func loginUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	}
 	defer db.Close()
 
-	_, _, storedPasswordHash := retrieveUserDB(db)
+	// Retrieve user data from database
+
+	_, _, storedPasswordHash, _ := retrieveUserDB(db, queryUsername)
 	if storedPasswordHash == "" {
-		log.Println("Failed to retrieve user data from the database.")
+		log.Printf("Failed to retrieve user data for username: %s", queryUsername)
 		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
 		return
 	}
 
+	// Verify password
 	match := passwordhashing.VerifyPassword(inputPassword, storedPasswordHash)
 	if !match {
-		log.Println("Login failed. Passwords do not match.")
+		log.Printf("Login failed for username: %s. Passwords do not match.", queryUsername)
 		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
 		return
 	}
 
-	log.Println("Login successful.")
-
+	// Login successful
+	log.Printf("Login successful for username: %s", queryUsername)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Login successful"))
+	// Optionally, respond with more data (e.g., user information)
+	json.NewEncoder(w).Encode(user.Username)
 }
 
-func retrieveUserDB(db *sql.DB) (string, string, string) {
+func retrieveUserDB(db *sql.DB, query_username string) (string, string, string, error) {
 	var getusername string
 	var getemail string
 	var getpassword string
 
-	query := "SELECT username, email, password_hash FROM users WHERE id = 10"
-	if err := db.QueryRow(query).Scan(&getusername, &getemail, &getpassword); err != nil {
-		//http.Error(w, "Query to database failed: "+err.Error(), http.StatusInternalServerError)
-		log.Printf("An error occurred while executing query: %v", err)
+	query := "SELECT username, email, password_hash FROM users WHERE username = $1"
+	err := db.QueryRow(query, query_username).Scan(&getusername, &getemail, &getpassword)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", "", "", fmt.Errorf("user not found")
+		}
+		return "", "", "", fmt.Errorf("error retrieving user data: %v", err)
 	}
-	return getusername, getemail, getpassword
 
+	return getusername, getemail, getpassword, nil
 }
-
 func Index(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	fmt.Fprintf(w, "Welcome")
 }
