@@ -84,12 +84,21 @@ func databaseHandler() {
 func getFormData(w http.ResponseWriter, r *http.Request) (string, string, string) {
 	err := r.ParseForm()
 	if err != nil {
-		http.Error(w, "ParseForm() err: "+err.Error(), http.StatusInternalServerError)
+		log.Printf("Error parsing form: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return "", "", ""
 	}
-	fmt.Fprintf(w, "POST request successful\n")
+
 	username := r.FormValue("username")
 	email := r.FormValue("email")
-	password := r.FormValue("passwordhash")
+	password := r.FormValue("password")
+
+	if username == "" || email == "" || password == "" {
+		log.Printf("Missing form data: username=%s, email=%s, password=%s", username, email, password)
+		http.Error(w, "Missing form data", http.StatusBadRequest)
+		return "", "", ""
+	}
+
 	return username, email, password
 }
 
@@ -140,31 +149,48 @@ func insertUserDB(db *sql.DB, username, email, passwordhash string, w http.Respo
 }
 
 func loginUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	_, _, inputpassword := getFormData(w, r)
+	_, _, inputPassword := getFormData(w, r)
+	if inputPassword == "" {
+		// Error already logged and response sent in getFormData
+		return
+	}
+
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		log.Printf("Failed to open database: %v", err)
-		//http.Error(w, "Failed to open database: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 	defer db.Close()
-	_, _, getpasswordhash := retrieveUserDB(db)
-	log.Println(getpasswordhash)
-	match := passwordhashing.VerifyPassword(inputpassword, getpasswordhash)
-	if !match {
-		log.Println("Login failed. Passwords don't match")
+
+	_, _, storedPasswordHash := retrieveUserDB(db)
+	if storedPasswordHash == "" {
+		log.Println("Failed to retrieve user data from the database.")
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
 		return
-	} else {
-		log.Println("Login successful")
 	}
 
+	log.Println("Retrieved password hash from database:", storedPasswordHash)
+	log.Println(inputPassword)
+	match := passwordhashing.VerifyPassword(inputPassword, storedPasswordHash)
+	if !match {
+		log.Println("Login failed. Passwords do not match.")
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	log.Println("Login successful.")
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Login successful"))
 }
+
 func retrieveUserDB(db *sql.DB) (string, string, string) {
 	var getusername string
 	var getemail string
 	var getpassword string
 
-	query := "SELECT username, email, password_hash FROM users WHERE id = 9"
+	query := "SELECT username, email, password_hash FROM users WHERE id = 10"
 	if err := db.QueryRow(query).Scan(&getusername, &getemail, &getpassword); err != nil {
 		//http.Error(w, "Query to database failed: "+err.Error(), http.StatusInternalServerError)
 		log.Printf("An error occurred while executing query: %v", err)
