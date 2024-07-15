@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"simple-server-auth/internal/utils"
@@ -18,13 +18,7 @@ func LoginUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	}
 
 	// Open database connection
-	db, err := sql.Open("postgres", utils.Connstr)
-	if err != nil {
-		log.Printf("Failed to open database: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
+	db := utils.DBConnection(w)
 
 	// Retrieve user data from database
 
@@ -46,17 +40,13 @@ func LoginUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	// Login successful
 	log.Printf("Login successful for username: %s", queryUsername)
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Login successful"))
+	w.Write([]byte("Login successful for "))
 	// Optionally, respond with more data (e.g., user information)
 	json.NewEncoder(w).Encode(user.Username)
 }
 
 // handles creating user
 func CreateUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	if r.Method != "POST" {
-		http.Error(w, "Method not supported", http.StatusMethodNotAllowed)
-		return
-	}
 
 	username, email, password, user := utils.GetFormData(w, r)
 	if username == "" || email == "" || password == "" {
@@ -67,26 +57,52 @@ func CreateUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 
 	utils.DatabaseHandler()
 
-	db, err := sql.Open("postgres", utils.Connstr)
-	if err != nil {
-		log.Printf("Failed to open database: %v", err)
-		http.Error(w, "Failed to open database: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
+	db := utils.DBConnection(w)
 
 	exists, err := utils.UsernameAndEmailExists(db, email, username)
 	if err != nil {
-		log.Printf("Failed to check username existence: %v", err)
-		http.Error(w, "Failed to check username existence", http.StatusInternalServerError)
+		log.Printf("Failed to check username and email existence: %v", err)
+		http.Error(w, "Failed to check username and email existence", http.StatusInternalServerError)
 		return
 	}
 	if exists {
-		http.Error(w, "Username already exists", http.StatusConflict)
+		http.Error(w, "Username or email already exists", http.StatusConflict)
 		return
 	}
 	utils.InsertUserDB(db, username, email, passwordhash, w)
 
-	json.NewEncoder(w).Encode(user)
+	response := []byte("Sucessfully registered " + user.Username)
+
+	if _, err := w.Write(response); err != nil {
+		fmt.Println(err)
+	}
 	// Create an instance of the Form struct
+}
+
+/*func DeleteUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params)  {
+
+}*/
+
+func DeleteUser(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	db := utils.DBConnection(w)
+	username, _, _, _ := utils.GetFormData(w, r)
+
+	if username == "" {
+		http.Error(w, "Username is required", http.StatusBadRequest)
+		log.Println("Username is empty in form data")
+		return
+	}
+
+	// Delete user from database
+	err := utils.DeleteUserDB(db, username, w)
+	if err != nil {
+		log.Printf("Failed to delete user: %v", err)
+		// Error response already handled in DeleteUserDB
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("User successfully deleted"))
+	log.Printf("User %s successfully deleted", username)
+
 }

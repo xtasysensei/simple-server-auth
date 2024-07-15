@@ -1,0 +1,14 @@
+{
+  "question": "What is your favorite programming language?",
+  "options": [
+    {
+      "text": "Python"
+    },
+    {
+      "text": "JavaScript"
+    },
+    {
+      "text": "Go"
+    }
+  ]
+}

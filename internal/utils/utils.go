@@ -108,6 +108,33 @@ func RetrieveUserDB(db *sql.DB, query_username string) (string, string, string, 
 	return getusername, getemail, getpassword, nil
 }
 
+func DeleteUserDB(db *sql.DB, query_username string, w http.ResponseWriter) error {
+	username, _, _, err := RetrieveUserDB(db, query_username)
+	if err != nil {
+		http.Error(w, "Error retrieving user from database: "+err.Error(), http.StatusInternalServerError)
+		log.Printf("Error retrieving user from database: %v", err)
+		return err
+	}
+
+	if username != "" {
+		query := "DELETE FROM users WHERE username = $1"
+		if _, err := db.Exec(query, query_username); err != nil {
+			http.Error(w, "Failed to delete user from database: "+err.Error(), http.StatusInternalServerError)
+			log.Printf("Error executing delete query: %v", err)
+			return err
+		}
+		log.Println("User successfully deleted:", query_username)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("User removal successful"))
+	} else {
+		http.Error(w, "Username does not exist", http.StatusNotFound)
+		log.Println("Attempted to delete non-existent user:", query_username)
+		return nil
+	}
+	return err
+}
+
+func UpdateUserDB() {}
 func GetFormData(w http.ResponseWriter, r *http.Request) (string, string, string, models.User) {
 	var user models.User
 	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
@@ -177,13 +204,22 @@ func GetFormData(w http.ResponseWriter, r *http.Request) (string, string, string
 	return username, email, password, user
 }
 
+func DBConnection(w http.ResponseWriter) *sql.DB {
+	db, err := sql.Open("postgres", Connstr)
+	if err != nil {
+		log.Printf("Failed to open database: %v", err)
+		http.Error(w, "Failed to open database: "+err.Error(), http.StatusInternalServerError)
+		return nil
+	}
+	defer db.Close()
+	return db
+}
+
 // checks if server is running
 func HandleHealth(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	response := []byte("Server is up and running!")
 
-	_, err := w.Write(response)
-
-	if err != nil {
+	if _, err := w.Write(response); err != nil {
 		fmt.Println(err)
 	}
 }
