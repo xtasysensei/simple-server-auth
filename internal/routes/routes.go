@@ -13,5 +13,5 @@ func Routes(r *httprouter.Router) {
 	r.GET("/health", utils.HandleHealth)
 	r.POST("/create-user", handlers.CreateUser)
 	r.POST("/login-user", handlers.LoginUser)
-	r.POST("/delete-user", handlers.DeleteUser)
+	r.DELETE("/delete-user", handlers.DeleteUser)
 }

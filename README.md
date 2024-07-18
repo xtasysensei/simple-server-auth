@@ -71,7 +71,8 @@ go run main.go
 ```
 ## Usage
 After running the server, it will be available at `http://localhost:8000`.
-
+## Docker
+If yoyu have docker installed , you can run `docker compose up -d` in the root directory to get the server and potgresql containers running.
 ## Contributing
 Feel free to fork this project, create a feature branch, and submit pull requests.
 

@@ -134,7 +134,6 @@ func DeleteUserDB(db *sql.DB, query_username string, w http.ResponseWriter) erro
 	return err
 }
 
-func UpdateUserDB() {}
 func GetFormData(w http.ResponseWriter, r *http.Request) (string, string, string, models.User) {
 	var user models.User
 	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
@@ -186,22 +185,23 @@ func GetFormData(w http.ResponseWriter, r *http.Request) (string, string, string
 	})
 	username := user.Username
 	email := user.Email
-	password := user.Password
-
-	if err := validate.Struct(user); err != nil {
-		// Validation failed, handle the error
-		errors := TranslateError(err, trans)
-		http.Error(w, fmt.Sprintf("Validation error: %s", errors), http.StatusBadRequest)
+	confirmPassword := user.ConfirmPassword
+	if confirmPassword != user.Password {
+		http.Error(w, "Passwords do not match", http.StatusBadRequest)
 		return "", "", "", user
+	} else {
+		password := user.Password
+
+		if err := validate.Struct(user); err != nil {
+			// Validation failed, handle the error
+			errors := TranslateError(err, trans)
+			http.Error(w, fmt.Sprintf("Validation error: %s", errors), http.StatusBadRequest)
+			return "", "", "", user
+		}
+
+		return username, email, password, user
 	}
 
-	if username == "" || email == "" || password == "" {
-		log.Printf("Missing form data: username=%s, email=%s, password=%s", username, email, password)
-		http.Error(w, "Missing form data", http.StatusBadRequest)
-		return "", "", "", user
-	}
-
-	return username, email, password, user
 }
 
 func DBConnection(w http.ResponseWriter) *sql.DB {

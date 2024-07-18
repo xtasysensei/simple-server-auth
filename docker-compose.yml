@@ -1,0 +1,43 @@
+version: '3.9'
+
+services:
+  app:
+    container_name: simple-server-auth
+    environment:
+      - SERVER_PORT=${SERVER_PORT}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_SERVER=postgresdb  # Use the service name directly
+      - POSTGRES_PORT=${POSTGRES_PORT}
+    build: .
+    ports:
+      - "${SERVER_PORT}:8080"
+    restart: on-failure
+    volumes:
+      - .:/app
+    depends_on:
+      - postgresdb
+    networks:
+      - learning
+
+  postgresdb:
+    image: postgres:latest
+    container_name: postgres_container
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    ports:
+      - "1234:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - learning
+
+volumes:
+  pg_data:
+
+networks:
+  learning:
+    driver: bridge
